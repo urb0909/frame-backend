@@ -56,7 +56,10 @@ const COACH_SYSTEM = [
   "Always respond with pure JSON only. No markdown fences, no commentary outside the JSON.",
 ].join("\n");
 
-async function callClaude(userPrompt) {
+async function callClaude(userPrompt, imageBlock) {
+  const content = imageBlock
+    ? [imageBlock, { type: "text", text: userPrompt }]
+    : userPrompt;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -68,7 +71,7 @@ async function callClaude(userPrompt) {
       model: MODEL,
       max_tokens: 1500,
       system: COACH_SYSTEM,
-      messages: [{ role: "user", content: userPrompt }],
+      messages: [{ role: "user", content }],
     }),
   });
   if (!res.ok) {
@@ -85,9 +88,14 @@ async function callClaude(userPrompt) {
 
 const clip = (s, n) => String(s || "").slice(0, n).trim();
 
-function buildGeneratePrompt({ her, stage, context }) {
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_IMAGE_B64 = 6 * 1024 * 1024; // ~4.5MB of actual image
+
+function buildGeneratePrompt({ her, stage, context, hasImage }) {
   return [
-    her
+    hasImage
+      ? "A screenshot of their text conversation is attached. Read it carefully: in most messaging apps HIS messages are the bubbles on the RIGHT (often blue/green) and HER messages are on the LEFT (often grey/white) — but use timestamps, contact name, and context to confirm who is who. Reconstruct the thread, pay attention to who is investing more, response gaps, and how the conversation has been flowing. Her most recent message is what he needs to respond to." + (her ? ` He adds: "${her}"` : "")
+      : her
       ? `Her message: "${her}"`
       : "Her message: (none — she has not replied. He is tempted to text again.)",
     `Stage of the interaction: ${stage || "unknown"}`,
@@ -140,9 +148,10 @@ const server = http.createServer(async (req, res) => {
 
     let raw = "";
     let size = 0;
+    const maxBody = url === "/api/generate" ? 8 * 1024 * 1024 : 32 * 1024; // screenshots allowed on generate
     req.on("data", (c) => {
       size += c.length;
-      if (size > 32 * 1024) { req.destroy(); return; }
+      if (size > maxBody) { req.destroy(); return; }
       raw += c;
     });
     req.on("end", async () => {
@@ -153,8 +162,19 @@ const server = http.createServer(async (req, res) => {
           const her = clip(body.her, 2000);
           const stage = clip(body.stage, 200);
           const context = clip(body.context, 2000);
-          if (!her && !stage.includes("left on read")) return send(res, 400, { error: "Missing her message." });
-          return send(res, 200, await callClaude(buildGeneratePrompt({ her, stage, context })));
+
+          let imageBlock = null;
+          if (body.image && typeof body.image === "object") {
+            const mt = String(body.image.media_type || "");
+            const data = String(body.image.data || "");
+            if (!ALLOWED_IMAGE_TYPES.includes(mt)) return send(res, 400, { error: "Unsupported image type." });
+            if (!data || data.length > MAX_IMAGE_B64) return send(res, 400, { error: "Image too large — try a smaller screenshot." });
+            if (!/^[A-Za-z0-9+/=]+$/.test(data)) return send(res, 400, { error: "Bad image data." });
+            imageBlock = { type: "image", source: { type: "base64", media_type: mt, data } };
+          }
+
+          if (!her && !imageBlock && !stage.includes("left on read")) return send(res, 400, { error: "Missing her message." });
+          return send(res, 200, await callClaude(buildGeneratePrompt({ her, stage, context, hasImage: !!imageBlock }), imageBlock));
         } else {
           const herLast = clip(body.herLast, 2000);
           const draft = clip(body.draft, 2000);
