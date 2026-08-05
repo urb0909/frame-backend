@@ -1,0 +1,13 @@
+{
+  "name": "frame-backend",
+  "version": "1.0.0",
+  "description": "FRAME texting coach backend — holds the API key, serves the coach. Zero dependencies.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}
